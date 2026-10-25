@@ -1,0 +1,279 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>FB Share Booster | Glass Edition</title>
+    <style>
+        :root {
+            --primary-blue: #2563eb;
+            --dark-blue: #1d4ed8;
+            --glass-bg: rgba(255, 255, 255, 0.7); 
+            --glass-border: rgba(255, 255, 255, 0.4);
+        }
+
+        body {
+            margin: 0;
+            padding: 0;
+            min-height: 100vh;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            font-family: 'Inter', system-ui, -apple-system, sans-serif;
+            background: linear-gradient(-45deg, #eff6ff, #dbeafe, #bfdbfe, #eff6ff);
+            background-size: 400% 400%;
+            animation: gradientBG 15s ease infinite;
+        }
+
+        @keyframes gradientBG {
+            0% { background-position: 0% 50%; }
+            50% { background-position: 100% 50%; }
+            100% { background-position: 0% 50%; }
+        }
+
+        .glass-container {
+            background: var(--glass-bg);
+            backdrop-filter: blur(15px);
+            -webkit-backdrop-filter: blur(15px);
+            border: 1px solid var(--glass-border);
+            border-radius: 30px;
+            padding: 40px;
+            width: 100%;
+            max-width: 500px;
+            box-shadow: 0 20px 40px rgba(0, 0, 0, 0.05);
+            text-align: center;
+        }
+
+        h2 {
+            margin-top: 0;
+            color: #1e293b;
+            font-size: 24px;
+            font-weight: 800;
+            margin-bottom: 25px;
+            text-transform: uppercase;
+            letter-spacing: 1px;
+        }
+
+        .input-group {
+            text-align: left;
+            margin-bottom: 20px;
+        }
+
+        label {
+            display: block;
+            margin-bottom: 6px;
+            font-weight: 700;
+            font-size: 11px;
+            color: #64748b;
+            text-transform: uppercase;
+            padding-left: 4px;
+        }
+
+        input, textarea {
+            width: 100%;
+            padding: 14px 18px;
+            border-radius: 12px;
+            border: 1px solid rgba(0, 0, 0, 0.05);
+            background: rgba(255, 255, 255, 0.8);
+            box-sizing: border-box;
+            font-size: 14px;
+            outline: none;
+            transition: all 0.3s ease;
+            color: #1e293b;
+            font-family: monospace;
+        }
+
+        textarea {
+            resize: vertical;
+            min-height: 80px;
+        }
+
+        input:focus, textarea:focus {
+            background: white;
+            border-color: var(--primary-blue);
+            box-shadow: 0 0 0 4px rgba(37, 99, 235, 0.1);
+        }
+
+        button {
+            width: 100%;
+            padding: 16px;
+            background: var(--primary-blue);
+            color: white;
+            border: none;
+            border-radius: 14px;
+            font-size: 16px;
+            font-weight: 700;
+            cursor: pointer;
+            transition: all 0.3s ease;
+            box-shadow: 0 10px 15px -3px rgba(37, 99, 235, 0.3);
+            margin-top: 10px;
+        }
+
+        button:hover:not(:disabled) {
+            background: var(--dark-blue);
+            transform: translateY(-2px);
+            box-shadow: 0 15px 25px -5px rgba(37, 99, 235, 0.4);
+        }
+
+        button:disabled {
+            opacity: 0.6;
+            cursor: not-allowed;
+        }
+
+        .status-container {
+            margin-top: 25px;
+            padding: 15px;
+            border-radius: 12px;
+            background: rgba(255, 255, 255, 0.5);
+            max-height: 300px;
+            overflow-y: auto;
+        }
+
+        #status-msg {
+            font-size: 12px;
+            font-weight: 500;
+            color: #1e293b;
+            white-space: pre-wrap;
+            word-wrap: break-word;
+            text-align: left;
+            line-height: 1.6;
+        }
+
+        .loading {
+            display: inline-block;
+            width: 20px;
+            height: 20px;
+            border: 3px solid rgba(37, 99, 235, 0.3);
+            border-radius: 50%;
+            border-top-color: var(--primary-blue);
+            animation: spin 1s ease-in-out infinite;
+        }
+
+        @keyframes spin {
+            to { transform: rotate(360deg); }
+        }
+
+        .info-text {
+            font-size: 11px;
+            color: #64748b;
+            margin-top: 5px;
+            text-align: left;
+            padding-left: 4px;
+        }
+    </style>
+</head>
+<body>
+
+    <div class="glass-container">
+        <h2>🚀 FB Share Booster</h2>
+        
+        <div class="input-group">
+            <label>📋 Facebook Cookie</label>
+            <textarea id="cookie" placeholder="Paste your Facebook cookie here...&#10;Example: c_user=123456789; xs=123456789; fr=..." rows="3"></textarea>
+            <div class="info-text">How to get: Browser DevTools → Application → Cookies → Copy</div>
+        </div>
+
+        <div class="input-group">
+            <label>🔗 Post URL</label>
+            <input type="text" id="link" placeholder="https://www.facebook.com/...">
+            <div class="info-text">Full Facebook post link you want to share</div>
+        </div>
+
+        <div class="input-group">
+            <label>📊 Number of Shares</label>
+            <input type="number" id="limit" value="10" min="1" max="1000">
+            <div class="info-text">Recommended: 10-100 shares for best results</div>
+        </div>
+
+        <button onclick="runScript()" id="boostBtn">✨ START BOOSTING ✨</button>
+
+        <div class="status-container">
+            <div id="status-msg">💡 Ready to boost your Facebook post!<br>Fill in the details and click start.</div>
+        </div>
+    </div>
+
+    <script>
+        let currentJobId = null;
+
+        async function runScript() {
+            const status = document.getElementById('status-msg');
+            const boostBtn = document.getElementById('boostBtn');
+            const data = {
+                cookie: document.getElementById('cookie').value.trim(),
+                link: document.getElementById('link').value.trim(),
+                limit: document.getElementById('limit').value
+            };
+
+            // Validation
+            if (!data.cookie || !data.link || !data.limit) {
+                status.innerHTML = "❌ ERROR: All fields are required!";
+                status.style.color = "#ef4444";
+                return;
+            }
+
+            if (data.cookie.length < 20) {
+                status.innerHTML = "❌ ERROR: Cookie seems too short. Please paste the full cookie string!";
+                status.style.color = "#ef4444";
+                return;
+            }
+
+            if (!data.link.includes('facebook.com') && !data.link.includes('fb.com')) {
+                status.innerHTML = "❌ ERROR: Please enter a valid Facebook post URL!";
+                status.style.color = "#ef4444";
+                return;
+            }
+
+            const limitNum = parseInt(data.limit);
+            if (isNaN(limitNum) || limitNum < 1 || limitNum > 1000) {
+                status.innerHTML = "❌ ERROR: Shares must be between 1 and 1000!";
+                status.style.color = "#ef4444";
+                return;
+            }
+
+            // Disable button and show loading
+            boostBtn.disabled = true;
+            boostBtn.textContent = "🚀 PROCESSING...";
+            status.innerHTML = '<div class="loading"></div> Sending to server...';
+            status.style.color = "#2563eb";
+
+            try {
+                const response = await fetch('/start', {
+                    method: 'POST',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify(data)
+                });
+                
+                const result = await response.json();
+                
+                if (response.ok && result.status === 'started') {
+                    currentJobId = result.jobId;
+                    status.innerHTML = `✅ ${result.message}<br>📋 Job ID: ${result.jobId}<br>⏳ Processing in background... Check server console for details.`;
+                    status.style.color = "#059669";
+                    
+                    // Reset after 5 seconds
+                    setTimeout(() => {
+                        status.innerHTML = "💡 Ready for next boost! Check server console for detailed progress.";
+                        boostBtn.disabled = false;
+                        boostBtn.textContent = "✨ START BOOSTING ✨";
+                    }, 5000);
+                } else {
+                    throw new Error(result.message || 'Unknown error');
+                }
+                
+            } catch (err) {
+                status.innerHTML = `❌ ERROR: ${err.message}<br>💡 Make sure the server is running!`;
+                status.style.color = "#ef4444";
+                boostBtn.disabled = false;
+                boostBtn.textContent = "✨ START BOOSTING ✨";
+            }
+        }
+
+        // Add keyboard shortcuts
+        document.addEventListener('keypress', function(e) {
+            if (e.key === 'Enter' && e.target.tagName !== 'TEXTAREA') {
+                runScript();
+            }
+        });
+    </script>
+</body>
+</html>
