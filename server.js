@@ -1,320 +1,393 @@
-import express from 'express';
-import path from 'path';
-import { fileURLToPath } from 'url';
-import fs from 'fs-extra';
-import chalk from 'chalk';
+import axios from "axios";
+import fs from "fs-extra";
+import chalk from "chalk";
+import readline from "readline-sync";
 
-const __filename = fileURLToPath(import.meta.url);
-const __dirname = path.dirname(__filename);
-
-const app = express();
-const port = process.env.PORT || 3000;
-
-app.use(express.json());
-app.use(express.static('public'));
-
-// Random User Agents
-const ua_list = [
+// ============================================================
+// CONFIG
+// ============================================================
+const UA_LIST = [
     "Mozilla/5.0 (Linux; Android 10; SM-G973F) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.120 Mobile Safari/537.36",
     "Mozilla/5.0 (Linux; Android 11; SM-G991B) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/92.0.4515.131 Mobile Safari/537.36",
     "Mozilla/5.0 (Linux; Android 12; SM-S901B) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/93.0.4577.82 Mobile Safari/537.36",
     "Mozilla/5.0 (Linux; Android 10; Pixel 3) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/94.0.4606.71 Mobile Safari/537.36",
-    "Mozilla/5.0 (Linux; Android 11; OnePlus 9) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/95.0.4638.74 Mobile Safari/537.36"
+    "Mozilla/5.0 (Linux; Android 11; OnePlus 9) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/95.0.4638.74 Mobile Safari/537.36",
 ];
 
-// Active jobs tracking
-const activeJobs = new Map();
+const TOKENS_FILE = "tokens.json";
+const COOKIES_FILE = "cookies.json";
+const DELAY_BETWEEN_SHARES = 3000;      // 3s
+const DELAY_BETWEEN_BATCHES = 10000;    // 10s
+const BATCH_SIZE = 5;
 
-// Helper function to extract post ID from URL
+axios.defaults.timeout = 20000;
+axios.defaults.validateStatus = () => true; // we handle status manually
+
+// ============================================================
+// HELPERS
+// ============================================================
+function randomUA() {
+    return UA_LIST[Math.floor(Math.random() * UA_LIST.length)];
+}
+
+function sleep(ms) {
+    return new Promise((r) => setTimeout(r, ms));
+}
+
+function parseCookieString(str) {
+    const out = {};
+    for (const part of str.split(";")) {
+        const trimmed = part.trim();
+        if (!trimmed) continue;
+        const idx = trimmed.indexOf("=");
+        if (idx === -1) continue;
+        const key = trimmed.slice(0, idx).trim();
+        const val = trimmed.slice(idx + 1).trim();
+        if (key) out[key] = val;
+    }
+    return out;
+}
+
+function cookieObjectToString(obj) {
+    return Object.entries(obj).map(([k, v]) => `${k}=${v}`).join("; ");
+}
+
 function extractPostId(url) {
-    // Handle different Facebook URL formats
     const patterns = [
         /\/posts\/(\d+)/,
         /\/photo\.php\?fbid=(\d+)/,
-        /\/permalink\.php\?story_fbid=(\d+)/
+        /\/permalink\.php\?story_fbid=(\d+)/,
+        /\/videos\/(\d+)/,
+        /fbid=(\d+)/,
     ];
-    
-    for (const pattern of patterns) {
-        const match = url.match(pattern);
-        if (match) return match[1];
+    for (const p of patterns) {
+        const m = url.match(p);
+        if (m) return m[1];
     }
-    return url;
+    return null;
 }
 
-// Function to validate cookie and get token
-async function validateCookie(cookie) {
+// ============================================================
+// BANNER
+// ============================================================
+function banner() {
+    console.clear();
+    console.log(chalk.blue("====================================="));
+    console.log(chalk.blue.bold("       FB SHARE BOOSTER v2.0"));
+    console.log(chalk.blue("====================================="));
+    console.log(chalk.gray("WARNING: This tool may violate Facebook's"));
+    console.log(chalk.gray("Terms of Service. Use at your own risk."));
+    console.log(chalk.gray("-------------------------------------"));
+}
+
+// ============================================================
+// STEP 1 — Validate cookie & extract token
+// ============================================================
+async function validateCookieAndGetToken(rawCookie) {
+    const cookieObj = parseCookieString(rawCookie);
+
+    if (!cookieObj.c_user || !cookieObj.xs) {
+        return { ok: false, error: "Missing c_user or xs cookie" };
+    }
+
     try {
-        const ua = ua_list[Math.floor(Math.random() * ua_list.length)];
-        
-        const response = await fetch("https://business.facebook.com/business_locations", {
-            headers: {
-                "user-agent": ua,
-                "referer": "https://www.facebook.com/",
-                "cookie": cookie
+        const res = await axios.get(
+            "https://business.facebook.com/business_locations",
+            {
+                headers: {
+                    "user-agent": randomUA(),
+                    referer: "https://www.facebook.com/",
+                    cookie: cookieObjectToString(cookieObj),
+                },
             }
+        );
+
+        const html = typeof res.data === "string" ? res.data : "";
+        const match = html.match(/(EAAG\w+)/);
+
+        if (!match) {
+            return {
+                ok: false,
+                error: "Token extraction failed (cookie may be expired)",
+            };
+        }
+
+        return { ok: true, token: match[1], cookieObj };
+    } catch (err) {
+        return { ok: false, error: err.message };
+    }
+}
+
+// ============================================================
+// STEP 2 — Fetch fb_dtsg + jazoest from post page
+// ============================================================
+async function fetchDtsgAndJazoest(cookieStr, postUrl) {
+    try {
+        const res = await axios.get(postUrl, {
+            headers: {
+                "user-agent": randomUA(),
+                cookie: cookieStr,
+                accept:
+                    "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+            },
         });
-        
-        const data = await response.text();
-        const tokenMatch = data.match(/(EAAG\w+)/);
-        
-        if (tokenMatch) {
-            return { valid: true, token: tokenMatch[1] };
+
+        const html = typeof res.data === "string" ? res.data : "";
+
+        const dtsgMatch =
+            html.match(/"DTSGInitialData",\[\],\{"token":"([^"]+)"/) ||
+            html.match(/"DTSGInitData",\[\],\{"token":"([^"]+)"/) ||
+            html.match(/name="fb_dtsg"\s+value="([^"]+)"/);
+
+        const jazoestMatch = html.match(/name="jazoest"\s+value="(\d+)"/);
+
+        if (!dtsgMatch) {
+            return { ok: false, error: "fb_dtsg not found on page" };
+        }
+
+        return {
+            ok: true,
+            fb_dtsg: dtsgMatch[1],
+            jazoest: jazoestMatch ? jazoestMatch[1] : "",
+        };
+    } catch (err) {
+        return { ok: false, error: err.message };
+    }
+}
+
+// ============================================================
+// STEP 3 — Attempt real share via GraphQL mutation
+// ============================================================
+async function attemptShare(cookieStr, postUrl, postId, fbDtsg, jazoest) {
+    const params = new URLSearchParams();
+    params.append("fb_dtsg", fbDtsg);
+    if (jazoest) params.append("jazoest", jazoest);
+    params.append("privacy", JSON.stringify({ value: "EVERYONE" }));
+    params.append("share_id", postId);
+    params.append("share_url", postUrl);
+
+    try {
+        const res = await axios.post(
+            "https://www.facebook.com/api/graphql/",
+            params.toString(),
+            {
+                headers: {
+                    "user-agent": randomUA(),
+                    cookie: cookieStr,
+                    "content-type": "application/x-www-form-urlencoded",
+                    "x-fb-friendly-name": "ComposerShareMutation",
+                    referer: postUrl,
+                    origin: "https://www.facebook.com",
+                },
+            }
+        );
+
+        const body =
+            typeof res.data === "string" ? res.data : JSON.stringify(res.data);
+
+        if (res.status !== 200) {
+            return { ok: false, reason: `HTTP ${res.status}` };
+        }
+
+        if (/"error"\s*:\s*\{/.test(body)) {
+            return { ok: false, reason: "GraphQL error in response" };
+        }
+
+        if (/checkpoint|login|not_logged_in/i.test(body)) {
+            return { ok: false, reason: "Session invalid / checkpoint" };
+        }
+
+        return { ok: true };
+    } catch (err) {
+        return { ok: false, reason: err.message };
+    }
+}
+
+// ============================================================
+// LOGIN FLOW — interactive, saves cookies + tokens
+// ============================================================
+async function login() {
+    banner();
+    console.log(chalk.yellow("Paste your Facebook cookie (format:"));
+    console.log(chalk.yellow("  c_user=...; xs=...; datr=...; fr=...)"));
+    console.log(chalk.gray("Do NOT commit this cookie to git.\n"));
+
+    const rawCookie = readline.question(chalk.green("cookie: ")).trim();
+
+    if (!rawCookie) {
+        console.log(chalk.red("Empty cookie. Abort."));
+        return;
+    }
+
+    console.log(chalk.yellow("\nValidating cookie..."));
+    const result = await validateCookieAndGetToken(rawCookie);
+
+    if (!result.ok) {
+        console.log(chalk.red(`Validation failed: ${result.error}`));
+        return;
+    }
+
+    console.log(chalk.green(`✓ Token found: ${result.token.slice(0, 20)}...`));
+
+    fs.writeFileSync(
+        TOKENS_FILE,
+        JSON.stringify([result.token], null, 2)
+    );
+    fs.writeFileSync(
+        COOKIES_FILE,
+        JSON.stringify([rawCookie], null, 2)
+    );
+
+    console.log(chalk.green(`Saved ${TOKENS_FILE} and ${COOKIES_FILE}`));
+    console.log(chalk.gray("Both files are gitignored — do not remove them."));
+}
+
+// ============================================================
+// BOT FLOW — read saved session, run shares
+// ============================================================
+async function bot() {
+    banner();
+
+    if (!fs.existsSync(COOKIES_FILE) || !fs.existsSync(TOKENS_FILE)) {
+        console.log(chalk.red("No session found. Run login first."));
+        return;
+    }
+
+    const cookies = JSON.parse(fs.readFileSync(COOKIES_FILE, "utf8"));
+    const tokens = JSON.parse(fs.readFileSync(TOKENS_FILE, "utf8"));
+
+    if (!cookies.length || !tokens.length) {
+        console.log(chalk.red("Saved session is empty. Run login again."));
+        return;
+    }
+
+    const link = readline.question(chalk.cyan("Post URL: ")).trim();
+    if (!/facebook\.com|fb\.com/i.test(link)) {
+        console.log(chalk.red("Invalid Facebook URL."));
+        return;
+    }
+
+    const postId = extractPostId(link);
+    if (!postId) {
+        console.log(
+            chalk.red(
+                "Could not extract post ID from URL. Try a /posts/<id> or /photo.php?fbid=<id> link."
+            )
+        );
+        return;
+    }
+
+    const limitRaw = readline.question(chalk.cyan("Number of shares: ")).trim();
+    const limit = parseInt(limitRaw, 10);
+
+    if (isNaN(limit) || limit < 1 || limit > 1000) {
+        console.log(chalk.red("Shares must be between 1 and 1000."));
+        return;
+    }
+
+    const cookieStr = cookies[0]; // single-cookie mode for now
+    console.log(chalk.yellow("\nFetching fb_dtsg / jazoest from post page..."));
+
+    const dtsg = await fetchDtsgAndJazoest(cookieStr, link);
+    if (!dtsg.ok) {
+        console.log(chalk.red(`Cannot fetch tokens: ${dtsg.error}`));
+        console.log(
+            chalk.yellow(
+                "The cookie may be logged out, or the post is not public."
+            )
+        );
+        return;
+    }
+
+    console.log(chalk.green("✓ Got fb_dtsg. Starting share loop...\n"));
+
+    let success = 0;
+    let failed = 0;
+    const start = Date.now();
+
+    for (let i = 1; i <= limit; i++) {
+        const result = await attemptShare(
+            cookieStr,
+            link,
+            postId,
+            dtsg.fb_dtsg,
+            dtsg.jazoest
+        );
+
+        const elapsed = Math.floor((Date.now() - start) / 1000);
+
+        if (result.ok) {
+            success++;
+            console.log(
+                chalk.green(`✓ ${i}/${limit} — shared (${elapsed}s)`)
+            );
         } else {
-            return { valid: false, error: "Token extraction failed" };
-        }
-    } catch (error) {
-        return { valid: false, error: error.message };
-    }
-}
+            failed++;
+            console.log(
+                chalk.red(`✗ ${i}/${limit} — ${result.reason} (${elapsed}s)`)
+            );
 
-// Function to share a post
-async function sharePost(cookie, postUrl, shareNumber) {
-    const ua = ua_list[Math.floor(Math.random() * ua_list.length)];
-    const postId = extractPostId(postUrl);
-    
-    try {
-        // Parse cookie string to object for proper formatting
-        const cookieObj = {};
-        cookie.split("; ").forEach(val => {
-            const [key, ...value] = val.split("=");
-            if (key && value.length) cookieObj[key] = value.join("=");
-        });
-        
-        const formattedCookie = Object.entries(cookieObj)
-            .map(([key, val]) => `${key}=${val}`)
-            .join("; ");
-        
-        // First, get the share dialog data
-        const shareDialogUrl = `https://www.facebook.com/sharer/sharer.php?u=${encodeURIComponent(postUrl)}`;
-        
-        const response = await fetch(shareDialogUrl, {
-            headers: {
-                "user-agent": ua,
-                "cookie": formattedCookie,
-                "referer": "https://www.facebook.com/"
-            }
-        });
-        
-        // Alternative sharing method
-        const shareResponse = await fetch("https://www.facebook.com/ajax/sharer/share.php", {
-            method: "POST",
-            headers: {
-                "user-agent": ua,
-                "cookie": formattedCookie,
-                "content-type": "application/x-www-form-urlencoded",
-                "x-requested-with": "XMLHttpRequest",
-                "referer": postUrl
-            },
-            body: new URLSearchParams({
-                "privacy": JSON.stringify({ value: "EVERYONE" }),
-                "share_url": postUrl,
-                "post_fbid": postId
-            })
-        });
-        
-        if (shareResponse.ok) {
-            const result = await shareResponse.text();
-            if (result.includes("success") || result.includes("share_id")) {
-                return { success: true, message: `✓ Share ${shareNumber} completed` };
-            }
-        }
-        
-        // Fallback method - direct share
-        const fallbackResponse = await fetch("https://www.facebook.com/manwelsoyasistayob", {
-            method: "POST",
-            headers: {
-                "user-agent": ua,
-                "cookie": formattedCookie,
-                "content-type": "application/x-www-form-urlencoded"
-            },
-            body: new URLSearchParams({
-                "share_id": postId,
-                "privacy": "EVERYONE"
-            })
-        });
-        
-        if (fallbackResponse.ok) {
-            return { success: true, message: `✓ Share ${shareNumber} completed` };
-        }
-        
-        return { success: false, message: `✗ Share ${shareNumber} failed` };
-        
-    } catch (error) {
-        return { success: false, message: `✗ Share ${shareNumber} error: ${error.message}` };
-    }
-}
-
-// Main boosting function
-async function runBoost(jobId, cookie, link, limit, statusCallback) {
-    let sharesCompleted = 0;
-    let sharesFailed = 0;
-    const batchSize = 5;
-    const delayBetweenShares = 3000; // 3 seconds delay between shares
-    const delayBetweenBatches = 10000; // 10 seconds delay between batches
-    
-    try {
-        // First validate the cookie
-        await statusCallback("Validating cookie...");
-        const validation = await validateCookie(cookie);
-        
-        if (!validation.valid) {
-            await statusCallback(`❌ Cookie validation failed: ${validation.error}`);
-            activeJobs.delete(jobId);
-            return;
-        }
-        
-        await statusCallback(`✓ Cookie validated successfully! Starting ${limit} shares...`);
-        
-        // Start sharing process
-        for (let i = 1; i <= limit; i++) {
-            // Check if job was cancelled
-            if (!activeJobs.has(jobId)) {
-                await statusCallback("⚠️ Job cancelled by user");
+            // Stop early if session is dead
+            if (/checkpoint|session/i.test(result.reason)) {
+                console.log(
+                    chalk.red(
+                        "\nSession appears invalid. Stopping to avoid account lock."
+                    )
+                );
                 break;
             }
-            
-            const result = await sharePost(cookie, link, i);
-            
-            if (result.success) {
-                sharesCompleted++;
-                await statusCallback(`${result.message} (${sharesCompleted}/${limit})`);
+        }
+
+        if (i < limit) {
+            if (i % BATCH_SIZE === 0) {
+                console.log(
+                    chalk.yellow(
+                        `Cooldown ${DELAY_BETWEEN_BATCHES / 1000}s...`
+                    )
+                );
+                await sleep(DELAY_BETWEEN_BATCHES);
             } else {
-                sharesFailed++;
-                await statusCallback(`${result.message} (Failed: ${sharesFailed})`);
-            }
-            
-            // Rate limiting
-            if (i < limit) {
-                if (i % batchSize === 0) {
-                    await statusCallback(`⏳ Batch complete. Waiting ${delayBetweenBatches/1000} seconds before next batch...`);
-                    await new Promise(r => setTimeout(r, delayBetweenBatches));
-                } else {
-                    await new Promise(r => setTimeout(r, delayBetweenShares));
-                }
+                await sleep(DELAY_BETWEEN_SHARES);
             }
         }
-        
-        // Final status
-        await statusCallback(`\n✨ COMPLETED! Total: ${sharesCompleted}/${limit} successful, ${sharesFailed} failed`);
-        
-    } catch (error) {
-        await statusCallback(`❌ Error: ${error.message}`);
-    } finally {
-        activeJobs.delete(jobId);
     }
+
+    console.log(
+        chalk.blue(
+            `\nDone. Success: ${success}, Failed: ${failed}, Total attempted: ${
+                success + failed
+            }`
+        )
+    );
+    console.log(
+        chalk.gray(
+            "Note: even 'success' here only means Facebook returned a non-error response."
+        )
+    );
+    console.log(
+        chalk.gray(
+            "Verify actual share count on the post before assuming it worked."
+        )
+    );
 }
 
-// API endpoint to start boosting
-app.post('/start', async (req, res) => {
-    const { cookie, link, limit } = req.body;
-    
-    // Validate input
-    if (!cookie || !link || !limit) {
-        return res.status(400).json({ 
-            status: 'error', 
-            message: 'All fields are required' 
-        });
-    }
-    
-    const limitNum = parseInt(limit);
-    if (isNaN(limitNum) || limitNum < 1 || limitNum > 1000) {
-        return res.status(400).json({ 
-            status: 'error', 
-            message: 'Shares must be between 1 and 1000' 
-        });
-    }
-    
-    // Validate URL format
-    if (!link.includes('facebook.com') && !link.includes('fb.com')) {
-        return res.status(400).json({ 
-            status: 'error', 
-            message: 'Please enter a valid Facebook post URL' 
-        });
-    }
-    
-    // Generate unique job ID
-    const jobId = Date.now().toString();
-    
-    // Store job info
-    activeJobs.set(jobId, {
-        cookie,
-        link,
-        limit: limitNum,
-        startTime: new Date()
-    });
-    
-    // Send immediate response
-    res.json({ 
-        status: 'started', 
-        message: `Boosting started! Processing ${limitNum} shares...`,
-        jobId: jobId
-    });
-    
-    // Create a status updater function
-    const statusMessages = [];
-    const updateStatus = async (message) => {
-        statusMessages.push({
-            time: new Date().toISOString(),
-            message: message
-        });
-        console.log(chalk.blue(`[Job ${jobId}] ${message}`));
-    };
-    
-    // Run boost in background
-    runBoost(jobId, cookie, link, limitNum, updateStatus).catch(async (error) => {
-        await updateStatus(`Fatal error: ${error.message}`);
-    });
-});
+// ============================================================
+// ENTRYPOINT
+// ============================================================
+async function main() {
+    banner();
+    console.log(chalk.cyan("[1] Login (save cookie)"));
+    console.log(chalk.cyan("[2] Run bot (use saved cookie)"));
 
-// API endpoint to check job status
-app.get('/status/:jobId', async (req, res) => {
-    const { jobId } = req.params;
-    
-    if (!activeJobs.has(jobId)) {
-        return res.json({ 
-            status: 'completed_or_not_found',
-            message: 'Job completed or not found'
-        });
-    }
-    
-    const job = activeJobs.get(jobId);
-    res.json({
-        status: 'running',
-        jobId: jobId,
-        startTime: job.startTime
-    });
-});
+    const choice = readline.question(chalk.green("\nchoice (1/2): ")).trim();
 
-// API endpoint to cancel job
-app.post('/cancel/:jobId', async (req, res) => {
-    const { jobId } = req.params;
-    
-    if (activeJobs.has(jobId)) {
-        activeJobs.delete(jobId);
-        res.json({ status: 'cancelled', message: 'Job cancelled successfully' });
-    } else {
-        res.json({ status: 'not_found', message: 'Job not found' });
-    }
-});
+    if (choice === "1") return login();
+    if (choice === "2") return bot();
 
-// Serve frontend
-app.get('/', (req, res) => {
-    res.sendFile(path.join(__dirname, 'public', 'index.html'));
-});
+    console.log(chalk.red("Invalid choice."));
+}
 
-// Health check endpoint
-app.get('/health', (req, res) => {
-    res.json({ 
-        status: 'healthy', 
-        timestamp: new Date().toISOString(),
-        activeJobs: activeJobs.size 
-    });
-});
-
-app.listen(port, () => {
-    console.log(chalk.green('═══════════════════════════════════════'));
-    console.log(chalk.blue(`✓ FB Share Booster Server Running`));
-    console.log(chalk.blue(`✓ Port: ${port}`));
-    console.log(chalk.blue(`✓ URL: http://localhost:${port}`));
-    console.log(chalk.green('═══════════════════════════════════════'));
+main().catch((err) => {
+    console.error(chalk.red(`Fatal: ${err.message}`));
+    process.exit(1);
 });
